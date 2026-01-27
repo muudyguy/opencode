@@ -41,6 +41,7 @@ export namespace LLM {
     small?: boolean
     tools: Record<string, Tool>
     retries?: number
+    apiKeyOverride?: string
   }
 
   export type StreamOutput = StreamTextResult<ToolSet, unknown>
@@ -59,7 +60,7 @@ export namespace LLM {
       providerID: input.model.providerID,
     })
     const [language, cfg, provider, auth] = await Promise.all([
-      Provider.getLanguage(input.model),
+      Provider.getLanguage(input.model, input.apiKeyOverride),
       Config.get(),
       Provider.getProvider(input.model.providerID),
       Auth.get(input.model.providerID),

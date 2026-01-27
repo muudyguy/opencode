@@ -153,7 +153,11 @@ export namespace SessionPrompt {
     const session = await Session.get(input.sessionID)
     await SessionRevert.cleanup(session)
 
-    const message = await createUserMessage(input)
+    // If session has an override, use its model unless explicitly provided in input
+    const inputWithOverride = session.override && !input.model
+      ? { ...input, model: { providerID: session.override.providerID, modelID: session.override.modelID } }
+      : input
+    const message = await createUserMessage(inputWithOverride)
     await Session.touch(input.sessionID)
 
     // this is backwards compatibility for allowing `tools` to be specified when
@@ -615,6 +619,7 @@ export namespace SessionPrompt {
         ],
         tools,
         model,
+        apiKeyOverride: session.override?.apiKey,
       })
       if (result === "stop") break
       if (result === "compact") {

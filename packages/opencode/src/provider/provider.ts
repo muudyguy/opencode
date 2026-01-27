@@ -956,7 +956,7 @@ export namespace Provider {
     return state().then((state) => state.providers)
   }
 
-  async function getSDK(model: Model) {
+  async function getSDK(model: Model, apiKeyOverride?: string) {
     try {
       using _ = log.time("getSDK", {
         providerID: model.providerID,
@@ -970,14 +970,20 @@ export namespace Provider {
       }
 
       if (!options["baseURL"]) options["baseURL"] = model.api.url
-      if (options["apiKey"] === undefined && provider.key) options["apiKey"] = provider.key
+      // Use apiKeyOverride if provided, otherwise fall back to provider.key
+      if (apiKeyOverride) {
+        options["apiKey"] = apiKeyOverride
+      } else if (options["apiKey"] === undefined && provider.key) {
+        options["apiKey"] = provider.key
+      }
       if (model.headers)
         options["headers"] = {
           ...options["headers"],
           ...model.headers,
         }
 
-      const key = Bun.hash.xxHash32(JSON.stringify({ npm: model.api.npm, options }))
+      // Include apiKeyOverride in cache key to avoid returning SDK with wrong key
+      const key = Bun.hash.xxHash32(JSON.stringify({ npm: model.api.npm, options, hasOverride: !!apiKeyOverride }))
       const existing = s.sdk.get(key)
       if (existing) return existing
 
@@ -1065,12 +1071,25 @@ export namespace Provider {
 
   export async function getModel(providerID: string, modelID: string) {
     const s = await state()
-    const provider = s.providers[providerID]
+    let provider = s.providers[providerID]
+
+    // If provider not loaded (e.g., no API key in env), fall back to models.dev database
+    // This allows using models via session override with API key
     if (!provider) {
-      const availableProviders = Object.keys(s.providers)
-      const matches = fuzzysort.go(providerID, availableProviders, { limit: 3, threshold: -10000 })
-      const suggestions = matches.map((m) => m.target)
-      throw new ModelNotFoundError({ providerID, modelID, suggestions })
+      const modelsDev = await ModelsDev.get()
+      const modelsDevProvider = modelsDev[providerID]
+      if (modelsDevProvider) {
+        // Provider exists in database but wasn't loaded - create a virtual provider info
+        // and add it to state so getSDK and getLanguage can access it
+        provider = fromModelsDevProvider(modelsDevProvider)
+        s.providers[providerID] = provider
+        log.info("using unloaded provider from models.dev", { providerID })
+      } else {
+        const availableProviders = Object.keys(s.providers)
+        const matches = fuzzysort.go(providerID, availableProviders, { limit: 3, threshold: -10000 })
+        const suggestions = matches.map((m) => m.target)
+        throw new ModelNotFoundError({ providerID, modelID, suggestions })
+      }
     }
 
     const info = provider.models[modelID]
@@ -1083,19 +1102,25 @@ export namespace Provider {
     return info
   }
 
-  export async function getLanguage(model: Model): Promise<LanguageModelV2> {
+  export async function getLanguage(model: Model, apiKeyOverride?: string): Promise<LanguageModelV2> {
     const s = await state()
-    const key = `${model.providerID}/${model.id}`
-    if (s.models.has(key)) return s.models.get(key)!
+    // Include override indicator in cache key to avoid returning model with wrong API key
+    const key = apiKeyOverride
+      ? `${model.providerID}/${model.id}:override`
+      : `${model.providerID}/${model.id}`
+    if (!apiKeyOverride && s.models.has(key)) return s.models.get(key)!
 
     const provider = s.providers[model.providerID]
-    const sdk = await getSDK(model)
+    const sdk = await getSDK(model, apiKeyOverride)
 
     try {
       const language = s.modelLoaders[model.providerID]
         ? await s.modelLoaders[model.providerID](sdk, model.api.id, provider.options)
         : sdk.languageModel(model.api.id)
-      s.models.set(key, language)
+      // Only cache non-override models to avoid memory growth from many overrides
+      if (!apiKeyOverride) {
+        s.models.set(key, language)
+      }
       return language
     } catch (e) {
       if (e instanceof NoSuchModelError)

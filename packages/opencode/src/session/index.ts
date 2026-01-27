@@ -76,6 +76,13 @@ export namespace Session {
           diff: z.string().optional(),
         })
         .optional(),
+      override: z
+        .object({
+          providerID: z.string(),
+          modelID: z.string(),
+          apiKey: z.string(),
+        })
+        .optional(),
     })
     .meta({
       ref: "Session",
@@ -133,6 +140,7 @@ export namespace Session {
         parentID: Identifier.schema("session").optional(),
         title: z.string().optional(),
         permission: Info.shape.permission,
+        override: Info.shape.override,
       })
       .optional(),
     async (input) => {
@@ -141,6 +149,7 @@ export namespace Session {
         directory: Instance.directory,
         title: input?.title,
         permission: input?.permission,
+        override: input?.override,
       })
     },
   )
@@ -195,6 +204,7 @@ export namespace Session {
     parentID?: string
     directory: string
     permission?: PermissionNext.Ruleset
+    override?: { providerID: string; modelID: string; apiKey: string }
   }) {
     const result: Info = {
       id: Identifier.descending("session", input.id),
@@ -205,12 +215,16 @@ export namespace Session {
       parentID: input.parentID,
       title: input.title ?? createDefaultTitle(!!input.parentID),
       permission: input.permission,
+      override: input.override,
       time: {
         created: Date.now(),
         updated: Date.now(),
       },
     }
-    log.info("created", result)
+    log.info("created", {
+      ...result,
+      override: result.override ? { ...result.override, apiKey: "***" } : undefined,
+    })
     await Storage.write(["session", Instance.project.id, result.id], result)
     Bus.publish(Event.Created, {
       info: result,
